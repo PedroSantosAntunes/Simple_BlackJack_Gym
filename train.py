@@ -1,90 +1,74 @@
 import gymnasium as gym
-import pickle
+import random
 from collections import defaultdict
-import time
-from lib import Statistics  # assuming your Statistics class is here
+import pickle
+from lib import Statistics
 
-# ---- Load Q-table ----
+def save_model(Q, epsilon,stats, filename="blackjack_q.pkl"):
+    with open(filename, "wb") as f:
+        pickle.dump((dict(Q), epsilon, stats), f)
+
 def load_model(filename="blackjack_q.pkl"):
-    with open(filename, "rb") as f:
-        data, epsilon, stats = pickle.load(f)
-    Q = defaultdict(lambda: [0.0, 0.0], data)
-    return Q
+    try:
+        with open(filename, "rb") as f:
+            data, epsilon, stats = pickle.load(f)
+        return defaultdict(lambda: [0.0, 0.0], data), epsilon, stats
+    except:
+        return defaultdict(lambda: [0.0, 0.0]), 1.0, Statistics()
 
-# Map action int → string
-ACTION_MAP = {0: "STICK", 1: "HIT"}
-
-def simulate_bankroll(starting_money=100, base_bet=1, delay=0.3, exponential_betting=False):
+def train():
     env = gym.make("Blackjack-v1")
-    Q = load_model()
 
-    money = starting_money
-    bet = base_bet
-    max_money = money
-    max_bet = bet
+    Q, epsilon, stats = load_model()
 
-    stats = Statistics()
+    n_episodes = 500_000
+    alpha = 0.1
+    gamma = 0.99
+    epsilon_decay = 0.99995
+    epsilon_min = 0
 
-    while money > 0:
+    for episode in range(n_episodes):
         state, _ = env.reset()
         done = False
-        stats.games += 1
-
-        print(f"\n=== Game {stats.games} | Current money: {money:.1f} | Current bet: {bet:.1f} ===")
 
         while not done:
-            player_sum, dealer_card, usable_ace = state
+            if random.random() < epsilon:
+                action = env.action_space.sample()
+            else:
+                action = Q[state].index(max(Q[state]))
 
-            # greedy policy
-            action = Q[state].index(max(Q[state]))
-            action_str = ACTION_MAP[action]
-
-            print(f"Player total: {player_sum} | Dealer showing: {dealer_card} | Action: {action_str}")
-
-            state, reward, terminated, truncated, _ = env.step(action)
+            next_state, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
 
-            time.sleep(delay)
+            target = reward if done else reward + gamma * max(Q[next_state])
+            Q[state][action] += alpha * (target - Q[state][action])
 
-        # update stats
-        if reward > 0:
+            state = next_state
+
+        # stats update (end of episode)
+        stats.games += 1
+        if reward == 1:
             stats.wins += 1
-            if exponential_betting:
-                bet = base_bet
             result = "WIN"
         elif reward == 0:
             stats.draws += 1
             result = "DRAW"
-            # bet unchanged
         else:
             stats.losses += 1
             result = "LOSS"
-            if exponential_betting:
-                bet *= 2
 
-        # update money
-        money += reward * bet
+        win_rate = stats.wins / stats.games
 
-        # ensure bet doesn't exceed current money
-        if bet > money:
-            bet = money
+        print(f"Game {stats.games} | {result} | Win rate: {win_rate:.3f} | Epsilon: {epsilon:.3f}")
 
-        # track maximums
-        max_money = max(max_money, money)
-        max_bet = max(max_bet, bet)
+        # decay epsilon
+        epsilon = max(epsilon_min, epsilon * epsilon_decay)
 
-        print(f"End of game: {result} | money={money:.1f} | next bet={bet:.1f}")
+        if episode % 10_000 == 0 and episode > 0:
+            save_model(Q, epsilon, stats)
 
-    env.close()
+    return Q
 
-    # final summary
-    print("\n--- Simulation ended ---")
-    print(f"Bankrupt after {stats.games} games")
-    print(f"Highest money held: {max_money:.1f}")
-    print(f"Highest bet placed: {max_bet:.1f}")
-    print(f"Wins: {stats.wins}, Draws: {stats.draws}, Losses: {stats.losses}")
-    win_rate = stats.wins / stats.games if stats.games > 0 else 0
-    print(f"Win rate: {win_rate:.3f}")
 
 if __name__ == "__main__":
-    simulate_bankroll(starting_money=100, base_bet=1, delay=0.3, exponential_betting=True)
+    train()
